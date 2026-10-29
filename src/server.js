@@ -285,7 +285,14 @@ app.get('/hls/seg.ts', async (req, res) => {
 });
 
 // Página de inicio interactiva para instalar fácilmente el addon
+// Si el cliente no pide HTML (ej: Stremio cuando el usuario pega la URL raíz sin /manifest.json), sirve el manifiesto JSON
 app.get('/', (req, res) => {
+  const acceptsHtml = req.headers.accept && req.headers.accept.includes('text/html');
+  if (!acceptsHtml) {
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    return res.json(manifest);
+  }
+
   const host = req.get('host');
   const protocol = req.protocol === 'https' || req.get('x-forwarded-proto') === 'https' ? 'https' : 'http';
   const manifestUrl = `${protocol}://${host}/manifest.json`;
