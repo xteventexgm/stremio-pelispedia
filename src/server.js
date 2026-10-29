@@ -117,10 +117,32 @@ app.get('/debug/pelispedia', async (req, res) => {
       embed69Res = { error: e.message };
     }
 
+    const testSites = {
+      'embed69': `https://embed69.org/video/${id}/`,
+      'pelisplus': `https://pelisplushd.la/search?s=spider-man`,
+      'cuevana3': `https://cuevana3.gs/`,
+      'lamovie': `https://lamovie.org/`,
+      'gnula': `https://ver.gnula.one/`
+    };
+
+    const siteResults = {};
+    for (const [name, sUrl] of Object.entries(testSites)) {
+      try {
+        const r = await fetch(sUrl, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0' },
+          signal: AbortSignal.timeout(4000)
+        });
+        siteResults[name] = { status: r.status, ok: r.ok };
+      } catch (e) {
+        siteResults[name] = { error: e.message };
+      }
+    }
+
     res.json({
       targetUrl: url,
       fetchResult: basicRes,
-      embed69Result: embed69Res
+      embed69Result: embed69Res,
+      siteResults
     });
   } catch (err) {
     res.json({ error: err.message, stack: err.stack });
