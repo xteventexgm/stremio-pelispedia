@@ -102,6 +102,7 @@ app.get('/debug/pelispedia', async (req, res) => {
     const fetchCustomDns = require('./providers/pelispedia')._fetchCustomDns;
     // Test basic fetch vs fetchCustomDns
     let basicRes = null;
+    let embed69Res = null;
     try {
       const b = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0', 'Referer': 'https://pelispedia.mov/' } });
       basicRes = { status: b.status, body: (await b.text()).slice(0, 500) };
@@ -109,9 +110,17 @@ app.get('/debug/pelispedia', async (req, res) => {
       basicRes = { error: e.message };
     }
 
+    try {
+      const e69 = await fetch(`https://embed69.org/video/${id}/`, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0', 'Referer': 'https://pelispedia.mov/' } });
+      embed69Res = { status: e69.status, body: (await e69.text()).slice(0, 500) };
+    } catch (e) {
+      embed69Res = { error: e.message };
+    }
+
     res.json({
       targetUrl: url,
-      fetchResult: basicRes
+      fetchResult: basicRes,
+      embed69Result: embed69Res
     });
   } catch (err) {
     res.json({ error: err.message, stack: err.stack });
