@@ -94,6 +94,30 @@ app.get('/play', async (req, res) => {
   }
 });
 
+// Endpoint de diagnóstico detallado
+app.get('/debug/pelispedia', async (req, res) => {
+  const id = req.query.id || 'tt10872600';
+  const url = `https://pelispedia.mov/vidurl/${id}/`;
+  try {
+    const fetchCustomDns = require('./providers/pelispedia')._fetchCustomDns;
+    // Test basic fetch vs fetchCustomDns
+    let basicRes = null;
+    try {
+      const b = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0', 'Referer': 'https://pelispedia.mov/' } });
+      basicRes = { status: b.status, body: (await b.text()).slice(0, 500) };
+    } catch (e) {
+      basicRes = { error: e.message };
+    }
+
+    res.json({
+      targetUrl: url,
+      fetchResult: basicRes
+    });
+  } catch (err) {
+    res.json({ error: err.message, stack: err.stack });
+  }
+});
+
 // Endpoint de diagnóstico para verificar conexión de Render con proveedores
 app.get('/debug/test', async (req, res) => {
   const id = req.query.id || 'tt10872600';
