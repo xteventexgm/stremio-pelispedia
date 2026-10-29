@@ -94,6 +94,37 @@ app.get('/play', async (req, res) => {
   }
 });
 
+// Endpoint de diagnóstico para verificar conexión de Render con proveedores
+app.get('/debug/test', async (req, res) => {
+  const id = req.query.id || 'tt10872600';
+  const type = req.query.type || 'movie';
+  const logs = [];
+  const log = (msg) => logs.push(`[${new Date().toISOString()}] ${msg}`);
+
+  try {
+    log(`1. Consultando Cinemeta para ${type}/${id}...`);
+    const meta = await getMetadata(type, id);
+    log(`Cinemeta meta: ${JSON.stringify(meta)}`);
+
+    if (!meta) {
+      return res.json({ error: 'Cinemeta falló', logs });
+    }
+
+    const host = req.get('host');
+    const protocol = req.protocol === 'https' || req.get('x-forwarded-proto') === 'https' ? 'https' : 'http';
+    const hostUrl = `${protocol}://${host}`;
+
+    log(`2. Consultando PelisPedia (${hostUrl})...`);
+    const streams = await getStreamsFromAll(meta, hostUrl);
+    log(`Streams obtenidos: ${streams.length}`);
+
+    res.json({ logs, streams });
+  } catch (err) {
+    log(`ERROR: ${err.message}\n${err.stack}`);
+    res.json({ logs, error: err.message });
+  }
+});
+
 // Health check para UptimeRobot / Render (evita que se duerma en el plan gratuito)
 app.get('/health', (req, res) => {
   res.json({

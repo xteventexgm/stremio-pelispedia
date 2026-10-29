@@ -45,7 +45,8 @@ function fetchCustomDns(url, options = {}) {
             cb(null, ips[0], 4);
           }
         } catch (err) {
-          cb(err);
+          // En entornos cloud como Render donde UDP:53 puede estar restringido, usar DNS nativo
+          require('dns').lookup(hostname, opts, callback);
         }
       },
       headers: { ...HEADERS, ...(options.headers || {}) },
