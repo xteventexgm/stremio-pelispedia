@@ -71,6 +71,37 @@ function fetchCustomDns(url, options = {}) {
 }
 
 /**
+ * Petición a PelisPedia: si está configurado CLOUDFLARE_WORKER_URL (en Render),
+ * pasa a través del Worker puente para evitar el 403 de Cloudflare.
+ */
+async function fetchPelispedia(url, options = {}) {
+  const workerUrl = process.env.CLOUDFLARE_WORKER_URL;
+  if (workerUrl) {
+    try {
+      const proxyUrl = `${workerUrl.replace(/\/$/, '')}/?url=${encodeURIComponent(url)}`;
+      const res = await fetch(proxyUrl, {
+        headers: {
+          'User-Agent': HEADERS['User-Agent'],
+          'Referer': BASE_URL + '/',
+          ...(options.headers || {})
+        },
+        signal: AbortSignal.timeout(options.timeout || 8000)
+      });
+      const text = await res.text();
+      return {
+        status: res.status,
+        headers: Object.fromEntries(res.headers.entries()),
+        body: text,
+        ok: res.ok
+      };
+    } catch (err) {
+      console.warn(`[PelisPedia Worker Proxy Error]:`, err.message);
+    }
+  }
+  return fetchCustomDns(url, options);
+}
+
+/**
  * Resuelve el Proof of Work (PoW) exigido por el reproductor Embed69 (~15ms)
  */
 function solvePoW(challenge, difficulty, salt) {
@@ -211,7 +242,7 @@ async function resolveSeriesVidUrlFallback(title, season, episode) {
   try {
     const cleanTitle = title.replace(/[^\w\s]/gi, '').trim();
     const searchUrl = `${BASE_URL}/search?s=${encodeURIComponent(cleanTitle)}`;
-    const searchRes = await fetchCustomDns(searchUrl);
+    const searchRes = await fetchPelispedia(searchUrl);
     if (!searchRes.ok) return null;
 
     const matchSerie = searchRes.body.match(/href="(https:\/\/pelispedia\.mov\/serie\/[^"]+)"/);
@@ -219,7 +250,7 @@ async function resolveSeriesVidUrlFallback(title, season, episode) {
 
     const serieUrl = matchSerie[1];
     const epUrl = `${serieUrl}/temporada/${season}/capitulo/${episode}`;
-    const epRes = await fetchCustomDns(epUrl);
+    const epRes = await fetchPelispedia(epUrl);
     if (!epRes.ok) return null;
 
     const vidMatch = epRes.body.match(/src="(\/vidurl\/[^"]+|https?:\/\/[^"]*(?:embed69\.org|vidurl)[^"]*)"/);
@@ -256,7 +287,7 @@ async function getStreams({ type, imdbId, title, year, season, episode }, hostUr
     }
 
     console.log(`[PelisPedia] Consultando: ${vidUrl}`);
-    const res = await fetchCustomDns(vidUrl);
+    const res = await fetchPelispedia(vidUrl);
     if (!res.ok) {
       console.warn(`[PelisPedia] Error ${res.status} al consultar vidurl`);
       return [];
@@ -274,7 +305,7 @@ async function getStreams({ type, imdbId, title, year, season, episode }, hostUr
       const fallbackUrl = await resolveSeriesVidUrlFallback(title, season, episode);
       if (fallbackUrl) {
         console.log(`[PelisPedia] Fallback encontrado: ${fallbackUrl}`);
-        const fallbackRes = await fetchCustomDns(fallbackUrl);
+        const fallbackRes = await fetchPelispedia(fallbackUrl);
         if (fallbackRes.ok) {
           html = fallbackRes.body;
           challengeMatch = html.match(/const POW_CHALLENGE = '([^']+)';/);
