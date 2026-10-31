@@ -200,30 +200,23 @@ async function extractVidhideM3U8(embedUrl, hostUrl = '') {
         try {
           const links = JSON.parse(linksMatch[1]);
 
-          // Preferir HLS4 (CDN ultra-rápido de alta velocidad) a través del proxy limpiador
-          // Si está configurado CLOUDFLARE_WORKER_URL, se procesa en el Worker (ancho de banda ILIMITADO y 0 MB en Render)
-          const proxyBase = process.env.CLOUDFLARE_WORKER_URL ? process.env.CLOUDFLARE_WORKER_URL.replace(/\/$/, '') : hostUrl;
-
-          if (links.hls4 && proxyBase) {
+          // 1. Preferir HLS4 a través de nuestro proxy limpiador (CDN TikTok de alta velocidad, sin buffering)
+          if (links.hls4 && hostUrl) {
             const rawHls4 = links.hls4.startsWith('http') ? links.hls4 : `https://${mirror}${links.hls4}`;
-            console.log(`[PelisPedia Vidhide] Usando HLS4 (CDN ultra-rápido) vía proxy limpiador (${proxyBase})`);
-            return `${proxyBase}/hls/master.m3u8?url=${encodeURIComponent(rawHls4)}`;
+            console.log(`[PelisPedia Vidhide] Usando HLS4 (CDN ultra-rápido) a través del proxy limpiador`);
+            return `${hostUrl}/hls/master.m3u8?url=${encodeURIComponent(rawHls4)}`;
           }
 
-          // Fallback a HLS2 directo si HLS4 no está disponible
+          // 2. Si hls4 no está disponible, usar hls2 directo
           if (links.hls2) {
             console.log(`[PelisPedia Vidhide] Usando HLS2 directo`);
             return links.hls2;
           }
 
-          if (links.hls) {
-            console.log(`[PelisPedia Vidhide] Usando HLS directo`);
-            return links.hls;
-          }
-
           if (links.hls4) {
             return links.hls4.startsWith('http') ? links.hls4 : `https://${mirror}${links.hls4}`;
           }
+          if (links.hls) return links.hls;
         } catch {}
       }
 
