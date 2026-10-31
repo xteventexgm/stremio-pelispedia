@@ -77,25 +77,29 @@ function fetchCustomDns(url, options = {}) {
 async function fetchPelispedia(url, options = {}) {
   const workerUrl = process.env.CLOUDFLARE_WORKER_URL;
   if (workerUrl) {
-    try {
-      const proxyUrl = `${workerUrl.replace(/\/$/, '')}/?url=${encodeURIComponent(url)}`;
-      const res = await fetch(proxyUrl, {
-        headers: {
-          'User-Agent': HEADERS['User-Agent'],
-          'Referer': BASE_URL + '/',
-          ...(options.headers || {})
-        },
-        signal: AbortSignal.timeout(options.timeout || 8000)
-      });
-      const text = await res.text();
-      return {
-        status: res.status,
-        headers: Object.fromEntries(res.headers.entries()),
-        body: text,
-        ok: res.ok
-      };
-    } catch (err) {
-      console.warn(`[PelisPedia Worker Proxy Error]:`, err.message);
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const proxyUrl = `${workerUrl.replace(/\/$/, '')}/?url=${encodeURIComponent(url)}`;
+        const res = await fetch(proxyUrl, {
+          headers: {
+            'User-Agent': HEADERS['User-Agent'],
+            'Referer': BASE_URL + '/',
+            ...(options.headers || {})
+          },
+          signal: AbortSignal.timeout(options.timeout || 12000)
+        });
+        const text = await res.text();
+        return {
+          status: res.status,
+          headers: Object.fromEntries(res.headers.entries()),
+          body: text,
+          ok: res.ok
+        };
+      } catch (err) {
+        console.warn(`[PelisPedia Worker Proxy Error - Intento ${attempt}]:`, err.message);
+        if (attempt === 2) break;
+        await new Promise(r => setTimeout(r, 600));
+      }
     }
   }
   return fetchCustomDns(url, options);

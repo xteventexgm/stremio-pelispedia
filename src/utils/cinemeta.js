@@ -42,7 +42,7 @@ async function getTmdbMetadata(type, cleanId) {
     }
 
     const data = await res.json();
-    if (!data || !data.meta) {
+    if (!data || !data.meta || !data.meta.name) {
       return null;
     }
 
@@ -99,34 +99,62 @@ async function getMetadata(type, id) {
     return { ...cached, season, episode };
   }
 
+  // 1. Intentar con Cinemeta (API oficial de Stremio)
   try {
     const url = `https://v3-cinemeta.strem.io/meta/${type}/${imdbId}.json`;
-    const res = await fetch(url, { headers: HEADERS, timeout: 8000 });
-    if (!res.ok) {
-      console.warn(`[Cinemeta] Falló al obtener metadatos de ${url} (Status: ${res.status})`);
-      return null;
+    const res = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(6000) });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.meta) {
+        const meta = {
+          imdbId,
+          title: data.meta.name,
+          year: parseInt(data.meta.year, 10) || null,
+          type
+        };
+
+        // Guardar en caché 1 hora
+        cache.set(cacheKey, meta, 60 * 60 * 1000);
+        return { ...meta, season, episode };
+      }
+    } else {
+      console.warn(`[Cinemeta] Falló consulta (${res.status}), intentando fallback TMDB...`);
     }
-
-    const data = await res.json();
-    if (!data || !data.meta) {
-      return null;
-    }
-
-    const meta = {
-      imdbId,
-      title: data.meta.name,
-      year: parseInt(data.meta.year, 10) || null,
-      type
-    };
-
-    // Guardar en caché 1 hora
-    cache.set(cacheKey, meta, 60 * 60 * 1000);
-
-    return { ...meta, season, episode };
   } catch (err) {
-    console.error(`[Cinemeta] Error al consultar metadatos:`, err.message);
-    return null;
+    console.warn(`[Cinemeta] Error al consultar metadatos (${err.message}), intentando fallback TMDB...`);
   }
+
+  // 2. Fallback con TMDB (por si Cinemeta no tiene el título o está caído)
+  try {
+    const tmdbUrl = `https://tmdb-stable.creepso.com/es-MX/meta/${type}/${imdbId}.json`;
+    const res = await fetch(tmdbUrl, { headers: HEADERS, signal: AbortSignal.timeout(6000) });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.meta && data.meta.name) {
+        let year = null;
+        if (data.meta.year) {
+          year = parseInt(data.meta.year, 10) || null;
+        } else if (data.meta.releaseInfo) {
+          year = parseInt(data.meta.releaseInfo, 10) || null;
+        }
+
+        const meta = {
+          imdbId: data.meta.imdb_id || imdbId,
+          title: data.meta.name,
+          year,
+          type
+        };
+
+        console.log(`[TMDB Fallback] Metadatos resueltos para ${imdbId}: "${meta.title}" (${year})`);
+        cache.set(cacheKey, meta, 60 * 60 * 1000);
+        return { ...meta, season, episode };
+      }
+    }
+  } catch (err) {
+    console.error(`[TMDB Fallback] Error al consultar metadatos para ${imdbId}:`, err.message);
+  }
+
+  return null;
 }
 
 module.exports = { getMetadata };
