@@ -196,31 +196,28 @@ async function extractVidhideM3U8(embedUrl, hostUrl = '') {
         try {
           const links = JSON.parse(linksMatch[1]);
 
-          // 1. Preferir hls4 a través de nuestro proxy limpiador (CDN TikTok de alta velocidad, sin buffering)
-          if (links.hls4 && hostUrl) {
-            const rawHls4 = links.hls4.startsWith('http') ? links.hls4 : `https://${mirror}${links.hls4}`;
-            console.log(`[PelisPedia Vidhide] Usando HLS4 (CDN ultra-rápido) a través del proxy limpiador`);
-            return `${hostUrl}/hls/master.m3u8?url=${encodeURIComponent(rawHls4)}`;
+          // 1. Preferir HLS2 DIRECTO (El cliente descarga directo del CDN de Vidhide; 0 MB de consumo de ancho de banda en tu servidor)
+          if (links.hls2) {
+            console.log(`[PelisPedia Vidhide] Usando HLS2 directo del CDN (0 consumo de ancho de banda en servidor)`);
+            return links.hls2;
           }
 
-          // 2. Si hls4 no está disponible, usar hls2 limpio directo
-          if (links.hls2) {
-            try {
-              const testRes = await fetch(links.hls2, {
-                method: 'HEAD',
-                signal: AbortSignal.timeout(1500)
-              });
-              if (testRes.ok) {
-                console.log(`[PelisPedia Vidhide] Usando HLS2 limpio directo`);
-                return links.hls2;
-              }
-            } catch {}
+          // 2. Si hls directo está disponible
+          if (links.hls) {
+            console.log(`[PelisPedia Vidhide] Usando HLS directo del CDN`);
+            return links.hls;
+          }
+
+          // 3. Si solo existe hls4 y hay hostUrl, usar proxy limpiador como último recurso
+          if (links.hls4 && hostUrl) {
+            const rawHls4 = links.hls4.startsWith('http') ? links.hls4 : `https://${mirror}${links.hls4}`;
+            console.log(`[PelisPedia Vidhide] Fallback a HLS4 a través de proxy limpiador`);
+            return `${hostUrl}/hls/master.m3u8?url=${encodeURIComponent(rawHls4)}`;
           }
 
           if (links.hls4) {
             return links.hls4.startsWith('http') ? links.hls4 : `https://${mirror}${links.hls4}`;
           }
-          if (links.hls) return links.hls;
         } catch {}
       }
 
@@ -313,9 +310,12 @@ async function getStreams({ type, imdbId, title, year, season, episode }, hostUr
           saltMatch = html.match(/const POW_SALT = '([^']+)';/);
 
           // Si es un reproductor embed69 directo sin PoW (ej. Victorious)
-          if (!challengeMatch && html.includes('playServerVast')) {
+          if (!challengeMatch && (html.includes('playServerVast') || html.includes('data-url='))) {
             console.log(`[PelisPedia] Reproductor embed69 directo detectado sin PoW`);
-            const serverMatches = [...html.matchAll(/playServerVast\(['"]([^'"]+)['"]\)/g)].map(m => m[1]);
+            const serverMatches = [
+              ...[...html.matchAll(/data-url=["']([^"']+)["']/g)].map(m => m[1]),
+              ...[...html.matchAll(/playServer[^(]*\(['"]([^'"]+)['"]\)/g)].map(m => m[1])
+            ];
             const vidhideUrl = serverMatches.find(u => u.includes('vidhide') || u.includes('streamhide') || u.includes('morencius') || u.includes('callistanise'));
             if (vidhideUrl) {
               console.log(`[PelisPedia] Enlace Vidhide extraído de embed69: ${vidhideUrl}`);
