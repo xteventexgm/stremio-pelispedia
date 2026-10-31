@@ -1,6 +1,6 @@
 const manifest = {
   id: 'community.pelispedia.addon',
-  version: '1.0.3',
+  version: '1.0.4',
   name: 'PelisPedia (Español)',
   description: 'Películas y series en Español Latino, Castellano y Subtitulado en streaming HLS directo de PelisPedia.',
   resources: ['stream'],

@@ -200,23 +200,25 @@ async function extractVidhideM3U8(embedUrl, hostUrl = '') {
         try {
           const links = JSON.parse(linksMatch[1]);
 
-          // 1. Preferir HLS2 DIRECTO (El cliente descarga directo del CDN de Vidhide; 0 MB de consumo de ancho de banda en tu servidor)
+          // Preferir HLS4 (CDN ultra-rápido de alta velocidad) a través del proxy limpiador
+          // Si está configurado CLOUDFLARE_WORKER_URL, se procesa en el Worker (ancho de banda ILIMITADO y 0 MB en Render)
+          const proxyBase = process.env.CLOUDFLARE_WORKER_URL ? process.env.CLOUDFLARE_WORKER_URL.replace(/\/$/, '') : hostUrl;
+
+          if (links.hls4 && proxyBase) {
+            const rawHls4 = links.hls4.startsWith('http') ? links.hls4 : `https://${mirror}${links.hls4}`;
+            console.log(`[PelisPedia Vidhide] Usando HLS4 (CDN ultra-rápido) vía proxy limpiador (${proxyBase})`);
+            return `${proxyBase}/hls/master.m3u8?url=${encodeURIComponent(rawHls4)}`;
+          }
+
+          // Fallback a HLS2 directo si HLS4 no está disponible
           if (links.hls2) {
-            console.log(`[PelisPedia Vidhide] Usando HLS2 directo del CDN (0 consumo de ancho de banda en servidor)`);
+            console.log(`[PelisPedia Vidhide] Usando HLS2 directo`);
             return links.hls2;
           }
 
-          // 2. Si hls directo está disponible
           if (links.hls) {
-            console.log(`[PelisPedia Vidhide] Usando HLS directo del CDN`);
+            console.log(`[PelisPedia Vidhide] Usando HLS directo`);
             return links.hls;
-          }
-
-          // 3. Si solo existe hls4 y hay hostUrl, usar proxy limpiador como último recurso
-          if (links.hls4 && hostUrl) {
-            const rawHls4 = links.hls4.startsWith('http') ? links.hls4 : `https://${mirror}${links.hls4}`;
-            console.log(`[PelisPedia Vidhide] Fallback a HLS4 a través de proxy limpiador`);
-            return `${hostUrl}/hls/master.m3u8?url=${encodeURIComponent(rawHls4)}`;
           }
 
           if (links.hls4) {
