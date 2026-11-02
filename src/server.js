@@ -238,11 +238,12 @@ app.get('/hls/sub.m3u8', async (req, res) => {
 
     const text = await upstream.text();
     const lines = text.split('\n');
+    const segHost = process.env.CLOUDFLARE_WORKER_URL ? process.env.CLOUDFLARE_WORKER_URL.replace(/\/$/, '') : host;
     const rewritten = lines.map(line => {
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith('#')) return line;
       const fullUrl = new URL(trimmed, url).href;
-      return `${host}/hls/seg.ts?url=${encodeURIComponent(fullUrl)}`;
+      return `${segHost}/hls/seg.ts?url=${encodeURIComponent(fullUrl)}`;
     }).join('\n');
 
     res.setHeader('Content-Type', 'application/vnd.apple.mpegurl; charset=utf-8');
