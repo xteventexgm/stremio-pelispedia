@@ -189,7 +189,7 @@ app.get('/health', (req, res) => {
   });
 });
 
-// --- PROXY HLS INTELIGENTE (Repara segmentos ofuscados de TikTok CDN/Vidhide) ---
+// --- PROXY HLS INTELIGENTE (Enruta listas y segmentos a través del Worker para 0MB de ancho de banda en Render) ---
 app.get('/hls/master.m3u8', async (req, res) => {
   const { url } = req.query;
   if (!url) return res.status(400).send('Falta parámetro url');
@@ -197,7 +197,11 @@ app.get('/hls/master.m3u8', async (req, res) => {
   const protocol = req.protocol === 'https' || req.get('x-forwarded-proto') === 'https' ? 'https' : 'http';
   const host = `${protocol}://${req.get('host')}`;
   try {
-    const upstream = await fetch(url, {
+    const upstreamUrl = process.env.CLOUDFLARE_WORKER_URL 
+      ? `${process.env.CLOUDFLARE_WORKER_URL.replace(/\/$/, '')}/?url=${encodeURIComponent(url)}`
+      : url;
+
+    const upstream = await fetch(upstreamUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
       }
@@ -229,7 +233,11 @@ app.get('/hls/sub.m3u8', async (req, res) => {
   const protocol = req.protocol === 'https' || req.get('x-forwarded-proto') === 'https' ? 'https' : 'http';
   const host = `${protocol}://${req.get('host')}`;
   try {
-    const upstream = await fetch(url, {
+    const upstreamUrl = process.env.CLOUDFLARE_WORKER_URL 
+      ? `${process.env.CLOUDFLARE_WORKER_URL.replace(/\/$/, '')}/?url=${encodeURIComponent(url)}`
+      : url;
+
+    const upstream = await fetch(upstreamUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
       }
@@ -238,12 +246,15 @@ app.get('/hls/sub.m3u8', async (req, res) => {
 
     const text = await upstream.text();
     const lines = text.split('\n');
-    const segHost = process.env.CLOUDFLARE_WORKER_URL ? process.env.CLOUDFLARE_WORKER_URL.replace(/\/$/, '') : host;
+    const segProxy = process.env.CLOUDFLARE_WORKER_URL 
+      ? `${process.env.CLOUDFLARE_WORKER_URL.replace(/\/$/, '')}/?url=` 
+      : `${host}/hls/seg.ts?url=`;
+
     const rewritten = lines.map(line => {
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith('#')) return line;
       const fullUrl = new URL(trimmed, url).href;
-      return `${segHost}/hls/seg.ts?url=${encodeURIComponent(fullUrl)}`;
+      return `${segProxy}${encodeURIComponent(fullUrl)}`;
     }).join('\n');
 
     res.setHeader('Content-Type', 'application/vnd.apple.mpegurl; charset=utf-8');

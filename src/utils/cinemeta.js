@@ -58,6 +58,7 @@ async function getTmdbMetadata(type, cleanId) {
       imdbId,
       tmdbId: tmdbFullId,
       title: data.meta.name,
+      spanishTitle: data.meta.name,
       year,
       type
     };
@@ -106,9 +107,24 @@ async function getMetadata(type, id) {
     if (res.ok) {
       const data = await res.json();
       if (data && data.meta) {
+        let spanishTitle = null;
+        try {
+          const tmdbRes = await fetch(`https://tmdb-stable.creepso.com/es-MX/meta/${type}/${imdbId}.json`, {
+            headers: HEADERS,
+            signal: AbortSignal.timeout(3000)
+          });
+          if (tmdbRes.ok) {
+            const tmdbData = await tmdbRes.json();
+            if (tmdbData && tmdbData.meta && tmdbData.meta.name) {
+              spanishTitle = tmdbData.meta.name;
+            }
+          }
+        } catch {}
+
         const meta = {
           imdbId,
           title: data.meta.name,
+          spanishTitle,
           year: parseInt(data.meta.year, 10) || null,
           type
         };
@@ -141,6 +157,7 @@ async function getMetadata(type, id) {
         const meta = {
           imdbId: data.meta.imdb_id || imdbId,
           title: data.meta.name,
+          spanishTitle: data.meta.name,
           year,
           type
         };

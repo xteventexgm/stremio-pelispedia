@@ -1,12 +1,6 @@
-const crypto = require('crypto');
-const https = require('https');
-const dns = require('dns').promises;
 const cache = require('../utils/cache');
 
-// Servidores DNS públicos fiables
-dns.setServers(['1.1.1.1', '8.8.8.8']);
-
-const BASE_URL = 'https://pelispedia.mov';
+const BASE_URL = 'https://pelispedia.is';
 
 const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -15,126 +9,39 @@ const HEADERS = {
   'Referer': BASE_URL + '/'
 };
 
-const LANG_MAP = {
-  'LAT': 'Español Latino',
-  'ESP': 'Castellano',
-  'SUB': 'Subtitulado',
-  'ENG': 'Inglés'
-};
-
-const VIDHIDE_MIRRORS = [
-  'callistanise.com',
-  'vidhideplus.com',
-  'vidhidepre.com'
-];
-
 /**
- * Petición HTTPS con DNS forzado a Cloudflare/Google (bypassea filtros de ISP)
+ * Realiza peticiones HTTP usando el Worker de Cloudflare si está disponible (evita bloqueos de IP y CORS)
  */
-function fetchCustomDns(url, options = {}) {
-  return new Promise((resolve, reject) => {
-    const req = https.get(url, {
-      lookup: async (hostname, opts, callback) => {
-        const cb = typeof opts === 'function' ? opts : callback;
-        const o = typeof opts === 'object' ? opts : {};
-        try {
-          const ips = await dns.resolve4(hostname);
-          if (o.all) {
-            cb(null, [{ address: ips[0], family: 4 }]);
-          } else {
-            cb(null, ips[0], 4);
-          }
-        } catch (err) {
-          // En entornos cloud como Render donde UDP:53 puede estar restringido, usar DNS nativo
-          require('dns').lookup(hostname, opts, callback);
-        }
-      },
-      headers: { ...HEADERS, ...(options.headers || {}) },
-      timeout: options.timeout || 8000
-    }, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => resolve({
-        status: res.statusCode,
-        headers: res.headers,
-        body: data,
-        ok: res.statusCode >= 200 && res.statusCode < 300
-      }));
-    });
-
-    req.on('error', reject);
-    req.on('timeout', () => {
-      req.destroy();
-      reject(new Error('Timeout de conexión'));
-    });
-  });
-}
-
-/**
- * Petición a PelisPedia: si está configurado CLOUDFLARE_WORKER_URL (en Render),
- * pasa a través del Worker puente para evitar el 403 de Cloudflare.
- */
-async function fetchPelispedia(url, options = {}) {
+async function fetchHttp(url, options = {}) {
   const workerUrl = process.env.CLOUDFLARE_WORKER_URL;
-  if (workerUrl) {
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        const proxyUrl = `${workerUrl.replace(/\/$/, '')}/?url=${encodeURIComponent(url)}`;
-        const res = await fetch(proxyUrl, {
-          headers: {
-            'User-Agent': HEADERS['User-Agent'],
-            'Referer': BASE_URL + '/',
-            ...(options.headers || {})
-          },
-          signal: AbortSignal.timeout(options.timeout || 12000)
-        });
-        const text = await res.text();
-        return {
-          status: res.status,
-          headers: Object.fromEntries(res.headers.entries()),
-          body: text,
-          ok: res.ok
-        };
-      } catch (err) {
-        console.warn(`[PelisPedia Worker Proxy Error - Intento ${attempt}]:`, err.message);
-        if (attempt === 2) break;
-        await new Promise(r => setTimeout(r, 600));
+  const targetUrl = workerUrl 
+    ? `${workerUrl.replace(/\/$/, '')}/?url=${encodeURIComponent(url)}`
+    : url;
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const res = await fetch(targetUrl, {
+        method: options.method || 'GET',
+        headers: {
+          ...HEADERS,
+          ...(options.headers || {})
+        },
+        body: options.body,
+        signal: AbortSignal.timeout(options.timeout || 10000)
+      });
+      const text = await res.text();
+      return {
+        status: res.status,
+        ok: res.ok,
+        body: text
+      };
+    } catch (err) {
+      console.warn(`[PelisPedia Fetch Error - Intento ${attempt}]:`, err.message);
+      if (attempt === 2) {
+        return { status: 500, ok: false, body: '' };
       }
+      await new Promise(r => setTimeout(r, 500));
     }
-  }
-  return fetchCustomDns(url, options);
-}
-
-/**
- * Resuelve el Proof of Work (PoW) exigido por el reproductor Embed69 (~15ms)
- */
-function solvePoW(challenge, difficulty, salt) {
-  const prefix = '0'.repeat(difficulty);
-  let nonce = 0;
-  while (true) {
-    const hash = crypto.createHash('sha256').update(challenge + nonce).digest('hex');
-    if (hash.startsWith(prefix)) {
-      const keyHash = crypto.createHash('sha256').update(challenge + nonce + salt).digest();
-      return { nonce, aesKey: keyHash };
-    }
-    nonce++;
-  }
-}
-
-/**
- * Descifra enlaces cifrados con AES-256-CBC
- */
-function decryptAES(encryptedBase64, aesKey) {
-  try {
-    const raw = Buffer.from(encryptedBase64, 'base64');
-    const iv = raw.subarray(0, 16);
-    const ciphertext = raw.subarray(16);
-    const decipher = crypto.createDecipheriv('aes-256-cbc', aesKey.subarray(0, 32), iv);
-    let decrypted = decipher.update(ciphertext);
-    decrypted = Buffer.concat([decrypted, decipher.final()]);
-    return decrypted.toString('utf8');
-  } catch {
-    return null;
   }
 }
 
@@ -169,104 +76,34 @@ function unpackDeanEdwards(packed) {
 }
 
 /**
- * Extrae el enlace HLS (.m3u8) directo desde Vidhide probando mirrors ultra-rápidos
+ * Extrae el enlace HLS (.m3u8) directo desde Fastream
  */
-async function extractVidhideM3U8(embedUrl, hostUrl = '') {
-  const codeMatch = embedUrl.match(/\/(?:embed|v|d)\/([a-zA-Z0-9]+)/);
-  if (!codeMatch) return null;
-  const code = codeMatch[1];
-
-  for (const mirror of VIDHIDE_MIRRORS) {
-    try {
-      const mirrorUrl = `https://${mirror}/embed/${code}`;
-      const res = await fetch(mirrorUrl, {
-        headers: {
-          'User-Agent': HEADERS['User-Agent'],
-          'Referer': BASE_URL + '/'
-        },
-        signal: AbortSignal.timeout(4000)
-      });
-      if (!res.ok) continue;
-
-      const html = await res.text();
-      const packedMatch = html.match(/eval\(function\(p,a,c,k,e,d\)[\s\S]*?\.split\('\|'\)\)\)/);
-      if (!packedMatch) continue;
-
-      const unpacked = unpackDeanEdwards(packedMatch[0]);
-      if (!unpacked) continue;
-
-      const linksMatch = unpacked.match(/var links\s*=\s*(\{[\s\S]*?\});/);
-      if (linksMatch) {
-        try {
-          const links = JSON.parse(linksMatch[1]);
-
-          // 1. Preferir HLS4 a través de nuestro proxy limpiador (CDN TikTok de alta velocidad, sin buffering)
-          if (links.hls4 && hostUrl) {
-            const rawHls4 = links.hls4.startsWith('http') ? links.hls4 : `https://${mirror}${links.hls4}`;
-            console.log(`[PelisPedia Vidhide] Usando HLS4 (CDN ultra-rápido) a través del proxy limpiador`);
-            return `${hostUrl}/hls/master.m3u8?url=${encodeURIComponent(rawHls4)}`;
-          }
-
-          // 2. Si hls4 no está disponible, usar hls2 directo
-          if (links.hls2) {
-            console.log(`[PelisPedia Vidhide] Usando HLS2 directo`);
-            return links.hls2;
-          }
-
-          if (links.hls4) {
-            return links.hls4.startsWith('http') ? links.hls4 : `https://${mirror}${links.hls4}`;
-          }
-          if (links.hls) return links.hls;
-        } catch {}
-      }
-
-      const m3u8Match = unpacked.match(/https?:\/\/[^\s"'`]+\.m3u8[^\s"'`]*/);
-      if (m3u8Match) return m3u8Match[0];
-    } catch (err) {
-      // Probar siguiente mirror
-      continue;
-    }
-  }
-
-  return null;
-}
-
-/**
- * Busca una serie por título y obtiene la URL real del reproductor vidurl si el IMDb ID no coincide
- */
-async function resolveSeriesVidUrlFallback(title, season, episode) {
+async function extractFastreamM3U8(embedUrl) {
   try {
-    const cleanTitle = title.replace(/[^\w\s]/gi, '').trim();
-    const searchUrl = `${BASE_URL}/search?s=${encodeURIComponent(cleanTitle)}`;
-    const searchRes = await fetchPelispedia(searchUrl);
-    if (!searchRes.ok) return null;
+    const res = await fetchHttp(embedUrl, {
+      headers: { 'Referer': BASE_URL + '/' }
+    });
+    if (!res.ok) return null;
 
-    const matchSerie = searchRes.body.match(/href="(https:\/\/pelispedia\.mov\/serie\/[^"]+)"/);
-    if (!matchSerie) return null;
+    const packedMatch = res.body.match(/eval\(function\(p,a,c,k,e,d\)[\s\S]*?\.split\('\|'\)\)\)/);
+    if (!packedMatch) return null;
 
-    const serieUrl = matchSerie[1];
-    const epUrl = `${serieUrl}/temporada/${season}/capitulo/${episode}`;
-    const epRes = await fetchPelispedia(epUrl);
-    if (!epRes.ok) return null;
+    const unpacked = unpackDeanEdwards(packedMatch[0]);
+    if (!unpacked) return null;
 
-    const vidMatch = epRes.body.match(/src="(\/vidurl\/[^"]+|https?:\/\/[^"]*(?:embed69\.org|vidurl)[^"]*)"/);
-    if (vidMatch) {
-      let rawUrl = vidMatch[1];
-      if (rawUrl.startsWith('/')) rawUrl = `${BASE_URL}${rawUrl}`;
-      return rawUrl;
-    }
-    return null;
+    const m3u8Match = unpacked.match(/https?:\/\/[^\s"']+\.m3u8[^\s"']*/i);
+    return m3u8Match ? m3u8Match[0] : null;
   } catch (err) {
-    console.warn(`[PelisPedia] Error en fallback de serie:`, err.message);
+    console.warn('[Fastream Extractor Error]:', err.message);
     return null;
   }
 }
 
 /**
- * Proveedor principal de PelisPedia
+ * Proveedor principal de PelisPedia (.is)
  */
-async function getStreams({ type, imdbId, title, year, season, episode }, hostUrl = '') {
-  const cacheKey = `streams:pelispedia:${type}:${imdbId}:${season || 0}:${episode || 0}`;
+async function getStreams({ type, imdbId, title, year, season, episode, spanishTitle }, hostUrl = '') {
+  const cacheKey = `streams:pelispedia_is:${type}:${imdbId}:${season || 0}:${episode || 0}`;
   const cached = cache.get(cacheKey);
   if (cached) {
     console.log(`[PelisPedia] Obtenido de caché: ${title} (${year})`);
@@ -276,113 +113,162 @@ async function getStreams({ type, imdbId, title, year, season, episode }, hostUr
   console.log(`[PelisPedia] Buscando: "${title}" (${year}) - Tipo: ${type}`);
 
   try {
-    let vidUrl = `${BASE_URL}/vidurl/${imdbId}/`;
-    if (type === 'series') {
-      const epStr = String(episode).padStart(2, '0');
-      vidUrl = `${BASE_URL}/vidurl/${imdbId}-${season}x${epStr}/`;
+    // 1. Lista de consultas de búsqueda (Título principal y título en español si difieren)
+    const searchQueries = [title];
+    if (spanishTitle && spanishTitle.toLowerCase() !== title.toLowerCase()) {
+      searchQueries.push(spanishTitle);
     }
 
-    console.log(`[PelisPedia] Consultando: ${vidUrl}`);
-    const res = await fetchPelispedia(vidUrl);
-    if (!res.ok) {
-      console.warn(`[PelisPedia] Error ${res.status} al consultar vidurl`);
+    let matchedLink = null;
+    let matchedPostId = null;
+    const targetTypePath = type === 'series' ? '/serie/' : '/pelicula/';
+
+    for (const q of searchQueries) {
+      const cleanQ = q.replace(/[^\w\s]/gi, ' ').replace(/\s+/g, ' ').trim();
+      const searchUrl = `${BASE_URL}/?s=${encodeURIComponent(cleanQ)}`;
+      console.log(`[PelisPedia] Buscando en: ${searchUrl}`);
+      const searchRes = await fetchHttp(searchUrl);
+      if (!searchRes.ok) continue;
+
+      const articles = [...searchRes.body.matchAll(/<article[^>]*class="[^"]*movies[^"]*"[^>]*>([\s\S]*?)<\/article>/gi)];
+      console.log(`[PelisPedia] Artículos encontrados para "${cleanQ}": ${articles.length}`);
+
+      for (const art of articles) {
+        const linkMatch = art[1].match(/href="([^"]+)"/i);
+        const titleMatch = art[1].match(/<h2 class="entry-title">([^<]+)<\/h2>/i) || art[1].match(/alt="([^"]+)"/i);
+        const postMatch = art[0].match(/id="post-(\d+)"/i) || art[1].match(/post-(\d+)/i);
+
+        if (linkMatch && linkMatch[1].includes(targetTypePath)) {
+          matchedLink = linkMatch[1];
+          matchedPostId = postMatch ? postMatch[1] : null;
+          console.log(`[PelisPedia] Coincidencia encontrada: "${titleMatch ? titleMatch[1] : ''}" -> ${matchedLink}`);
+          break;
+        }
+      }
+      if (matchedLink) break;
+    }
+
+    if (!matchedLink) {
+      console.warn(`[PelisPedia] No se encontró el contenido "${title}" en pelispedia.is`);
       return [];
     }
 
-    let html = res.body;
+    // 2. Si es serie, resolver la URL del episodio
+    let targetPageUrl = matchedLink;
 
-    let challengeMatch = html.match(/const POW_CHALLENGE = '([^']+)';/);
-    let diffMatch = html.match(/const POW_DIFFICULTY = (\d+);/);
-    let saltMatch = html.match(/const POW_SALT = '([^']+)';/);
+    if (type === 'series') {
+      console.log(`[PelisPedia] Resolviendo Temporada ${season}, Episodio ${episode}...`);
+      const serieRes = await fetchHttp(matchedLink);
+      if (!serieRes.ok) return [];
 
-    // Si no se encuentra el reproductor y es serie, intentar resolución por búsqueda y capítulo
-    if ((!challengeMatch || !diffMatch || !saltMatch) && type === 'series') {
-      console.log(`[PelisPedia] ID directo sin resultados, intentando búsqueda de "${title}" S${season}E${episode}...`);
-      const fallbackUrl = await resolveSeriesVidUrlFallback(title, season, episode);
-      if (fallbackUrl) {
-        console.log(`[PelisPedia] Fallback encontrado: ${fallbackUrl}`);
-        const fallbackRes = await fetchPelispedia(fallbackUrl);
-        if (fallbackRes.ok) {
-          html = fallbackRes.body;
-          challengeMatch = html.match(/const POW_CHALLENGE = '([^']+)';/);
-          diffMatch = html.match(/const POW_DIFFICULTY = (\d+);/);
-          saltMatch = html.match(/const POW_SALT = '([^']+)';/);
+      const serieHtml = serieRes.body;
+      const epRegex = new RegExp(`temporada-${season}-capitulo-${episode}/?$`, 'i');
 
-          // Si es un reproductor embed69 directo sin PoW (ej. Victorious)
-          if (!challengeMatch && (html.includes('playServerVast') || html.includes('data-url='))) {
-            console.log(`[PelisPedia] Reproductor embed69 directo detectado sin PoW`);
-            const serverMatches = [
-              ...[...html.matchAll(/data-url=["']([^"']+)["']/g)].map(m => m[1]),
-              ...[...html.matchAll(/playServer[^(]*\(['"]([^'"]+)['"]\)/g)].map(m => m[1])
-            ];
-            const vidhideUrl = serverMatches.find(u => u.includes('vidhide') || u.includes('streamhide') || u.includes('morencius') || u.includes('callistanise'));
-            if (vidhideUrl) {
-              console.log(`[PelisPedia] Enlace Vidhide extraído de embed69: ${vidhideUrl}`);
-              const m3u8 = await extractVidhideM3U8(vidhideUrl, hostUrl);
-              if (m3u8) {
-                const streams = [{
-                  name: 'PelisPedia',
-                  title: `[PelisPedia] Español Latino\nVidhide • ⚡ HLS CDN Directo`,
-                  url: m3u8,
-                  behaviorHints: { notWebReady: false }
-                }];
-                cache.set(cacheKey, streams, 15 * 60 * 1000);
-                return streams;
-              }
-            }
+      const epLinks = [...serieHtml.matchAll(/href="([^"]*capitulo[^"]*)"/gi)].map(m => m[1]);
+      let epUrl = epLinks.find(l => epRegex.test(l));
+
+      // Si no aparece directamente en la página (ej: temporadas posteriores), consultar vía AJAX
+      if (!epUrl) {
+        const postMatch = matchedPostId || (serieHtml.match(/data-post="(\d+)"/) || [])[1];
+        if (postMatch) {
+          console.log(`[PelisPedia] Consultando temporada ${season} via AJAX (post: ${postMatch})...`);
+          const ajaxParams = new URLSearchParams();
+          ajaxParams.append('action', 'action_select_season');
+          ajaxParams.append('season', String(season));
+          ajaxParams.append('post', postMatch);
+
+          const ajaxRes = await fetchHttp(`${BASE_URL}/wp-admin/admin-ajax.php`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+              'Referer': matchedLink
+            },
+            body: ajaxParams.toString()
+          });
+
+          if (ajaxRes.ok) {
+            const ajaxEpLinks = [...ajaxRes.body.matchAll(/href="([^"]*capitulo[^"]*)"/gi)].map(m => m[1]);
+            epUrl = ajaxEpLinks.find(l => epRegex.test(l));
           }
         }
       }
-    }
 
-    if (!challengeMatch || !diffMatch || !saltMatch) {
-      console.warn(`[PelisPedia] No se encontraron parámetros PoW`);
-      return [];
-    }
-
-    const { aesKey } = solvePoW(challengeMatch[1], parseInt(diffMatch[1], 10), saltMatch[1]);
-
-    const dataLinkMatch = html.match(/dataLink\s*=\s*(\[[\s\S]*?\]);/);
-    if (!dataLinkMatch) {
-      console.warn(`[PelisPedia] No se encontró el objeto dataLink`);
-      return [];
-    }
-
-    const dataLink = JSON.parse(dataLinkMatch[1]);
-    const streamPromises = [];
-
-    for (const group of dataLink) {
-      const langText = LANG_MAP[group.video_language] || group.video_language || 'Español';
-      const embeds = group.sortedEmbeds || [];
-
-      // Buscar Vidhide
-      const vidhideEmbed = embeds.find(e => e.servername === 'vidhide');
-      if (vidhideEmbed) {
-        const vidhideUrl = decryptAES(vidhideEmbed.link, aesKey);
-        if (vidhideUrl) {
-          streamPromises.push(
-            extractVidhideM3U8(vidhideUrl, hostUrl).then(m3u8 => {
-              if (!m3u8) return null;
-              return {
-                name: 'PelisPedia',
-                title: `[PelisPedia] ${langText}\nVidhide • ⚡ HLS CDN Directo`,
-                url: m3u8,
-                behaviorHints: {
-                  notWebReady: false
-                }
-              };
-            }).catch(() => null)
-          );
+      // Fallback: URL canónica por convención ToroFilm
+      if (!epUrl) {
+        const slugMatch = matchedLink.match(/\/serie\/([^/]+)\/?/);
+        if (slugMatch) {
+          epUrl = `${BASE_URL}/capitulo/${slugMatch[1]}-temporada-${season}-capitulo-${episode}/`;
+          console.log(`[PelisPedia] Intentando URL canónica de episodio: ${epUrl}`);
         }
       }
+
+      if (!epUrl) {
+        console.warn(`[PelisPedia] No se pudo encontrar el episodio S${season}E${episode}`);
+        return [];
+      }
+
+      targetPageUrl = epUrl;
     }
 
-    const results = await Promise.allSettled(streamPromises);
+    // 3. Obtener página del reproductor
+    console.log(`[PelisPedia] Consultando reproductor: ${targetPageUrl}`);
+    const pageRes = await fetchHttp(targetPageUrl);
+    if (!pageRes.ok) return [];
+
+    const pageHtml = pageRes.body;
+
+    // 4. Mapear idiomas de las pestañas de opciones
+    const langMap = {};
+    const optMatches = [...pageHtml.matchAll(/href="#options-(\d+)"[^>]*>([\s\S]*?)<\/a>/gi)];
+    for (const opt of optMatches) {
+      const optIdx = opt[1];
+      const optText = opt[2];
+      let lang = 'Español';
+      if (/latino/i.test(optText)) lang = 'Español Latino';
+      else if (/castellano/i.test(optText)) lang = 'Castellano';
+      else if (/vose|sub/i.test(optText)) lang = 'Subtitulado';
+      else if (/ingl[eé]s/i.test(optText)) lang = 'Inglés';
+      langMap[optIdx] = lang;
+    }
+
+    // 5. Extraer enlaces de embebidos (trembed)
+    const iframes = [...pageHtml.matchAll(/<iframe[^>]*src="([^"]*trembed[^"]*)"/gi)].map(m => m[1].replace(/&#038;/g, '&'));
+    console.log(`[PelisPedia] Iframes trembed encontrados: ${iframes.length}`);
+
     const streams = [];
 
-    for (const r of results) {
-      if (r.status === 'fulfilled' && r.value) {
-        streams.push(r.value);
+    for (const ifrUrl of iframes) {
+      const trembedMatch = ifrUrl.match(/\?trembed=(\d+)/);
+      const optIdx = trembedMatch ? trembedMatch[1] : '0';
+      const lang = langMap[optIdx] || `Opción ${parseInt(optIdx, 10) + 1}`;
+
+      console.log(`[PelisPedia] Procesando opción ${optIdx} (${lang})...`);
+      const trembedRes = await fetchHttp(ifrUrl, { headers: { 'Referer': targetPageUrl } });
+      if (!trembedRes.ok) continue;
+
+      const innerIframeMatch = trembedRes.body.match(/<iframe[^>]*src="([^"]+)"/i);
+      if (!innerIframeMatch) continue;
+
+      const embedUrl = innerIframeMatch[1];
+      console.log(`[PelisPedia] Reproductor encontrado: ${embedUrl}`);
+
+      if (embedUrl.includes('fastream')) {
+        const rawM3u8 = await extractFastreamM3U8(embedUrl);
+        if (rawM3u8) {
+          console.log(`[PelisPedia] Stream M3U8 extraído para ${lang}`);
+          const streamUrl = hostUrl 
+            ? `${hostUrl}/hls/master.m3u8?url=${encodeURIComponent(rawM3u8)}` 
+            : rawM3u8;
+
+          streams.push({
+            name: 'PelisPedia',
+            title: `[PelisPedia] ${lang}\nFastream • ⚡ HLS CDN Directo`,
+            url: streamUrl,
+            behaviorHints: {
+              notWebReady: false
+            }
+          });
+        }
       }
     }
 
